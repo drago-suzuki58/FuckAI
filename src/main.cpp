@@ -5,7 +5,8 @@
 #include <filesystem>
 #include <map>
 #include <set>
-
+#include <cpr/cpr.h>
+#include <nlohmann/json.hpp>
 
 #define LOG_ERROR   "\033[31mError: \033[0m"
 #define LOG_WARNING "\033[33mWarning: \033[0m"
@@ -23,11 +24,14 @@ const char* USAGE =
     "\n"
     "Usage: FuckAI <Commands to know>\n"
     "Options:\n"
-    "  --help,    -h, help              Show this help message\n"
-    "  --version, -v, version           Show version information\n"
-    "  --config,  -c, config            Edit configuration options\n"
-    "    --config(or -c, config) <key> <value>  To set a configuration option\n"
-    "  --show-config, -s, show-config   Show current configuration options\n";
+    "  --help,    -h:         Show this help message\n"
+    "  --version, -v:         Show version information\n"
+    "  --config,  -c:         Edit configuration options\n"
+    "    --config(or -c) <key> <value>:\n"
+    "      keys: OPENAI_API_KEY, OPENAI_API_BASE_URL, OPENAI_API_MODEL\n"
+    "      values: <string>\n"
+    "                         To set a configuration option\n"
+    "  --show-config, -s:     Show current configuration options\n";
 
 const std::set<std::string> CONFIG_KEYS = {
     "OPENAI_API_KEY",
@@ -82,6 +86,54 @@ int save_config(const std::string& filename, const FuckAIConfig& config) {
     return 0;
 }
 
+std::string post_openai(const std::string& prompt, const FuckAIConfig& config) {
+    if (config.find("OPENAI_API_KEY") == config.end()) {
+        std::cerr << LOG_ERROR << "API key not found in configuration.\n" << "Please run `FuckAI --config OPENAI_API_KEY <value>` to set it." << std::endl;
+        return "";
+    }
+    if (config.find("OPENAI_API_MODEL") == config.end()) {
+        std::cerr << LOG_ERROR << "API model not found in configuration.\n" << "Please run `FuckAI --config OPENAI_API_MODEL <value>` to set it." << std::endl;
+        return "";
+    }
+
+    std::string api_key = config.at("OPENAI_API_KEY");
+    std::string api_url = config.count("OPENAI_API_BASE_URL") ? config.at("OPENAI_API_BASE_URL") : "https://api.openai.com/v1/chat/completions";
+    std::string model = config.count("OPENAI_API_MODEL") ? config.at("OPENAI_API_MODEL") : "gpt-4.1-mini-2025-04-14";
+
+    nlohmann::json body = {
+        {"model", model},
+        {"messages", {
+            {{"role", "system"}, {"content", "You are a helpful and accurate AI assistant. Think step-by-step to ensure a high-quality response."}},
+            {{"role", "user"}, {"content", prompt}}
+        }},
+        {"temperature", 0.7},
+        {"max_tokens", 2048},
+        {"stream", false}
+    };
+
+    auto response = cpr::Post(
+        cpr::Url{api_url},
+        cpr::Header{
+            {"Authorization", "Bearer " + api_key},
+            {"Content-Type", "application/json"}
+        },
+        cpr::Body{body.dump()}
+    );
+
+    if (response.status_code != 200) {
+        std::cerr << LOG_ERROR << "API request failed with status code: " << response.status_code << std::endl;
+        std::cerr << LOG_ERROR << "Response:\n" << response.text << std::endl;
+        return "";
+    }
+
+    auto json = nlohmann::json::parse(response.text);
+    if (json.contains("choices") && !json["choices"].empty()) {
+        return json["choices"][0]["message"]["content"];
+    }
+
+    return "No response from API";
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << LOG_ERROR << "No command provided." << std::endl;
@@ -91,8 +143,7 @@ int main(int argc, char** argv) {
 
     if (
         std::strcmp(argv[1], "--help") == 0 ||
-        std::strcmp(argv[1], "-h") == 0 ||
-        std::strcmp(argv[1], "help") == 0
+        std::strcmp(argv[1], "-h") == 0
     ) {
         std::cout << USAGE << std::endl;
         return 0;
@@ -100,8 +151,7 @@ int main(int argc, char** argv) {
 
     if (
         std::strcmp(argv[1], "--version") == 0 ||
-        std::strcmp(argv[1], "-v") == 0 ||
-        std::strcmp(argv[1], "version") == 0
+        std::strcmp(argv[1], "-v") == 0
     ) {
         std::cout << "Version " << VERSION << std::endl;
         return 0;
@@ -111,29 +161,56 @@ int main(int argc, char** argv) {
 
     if (
         std::strcmp(argv[1], "--config") == 0 ||
-        std::strcmp(argv[1], "-c") == 0 ||
-        std::strcmp(argv[1], "config") == 0
+        std::strcmp(argv[1], "-c") == 0
     ) {
         if (argc < 4) {
-            std::cerr << "Usage: FuckAI --config(or -c, config) <key> <value>" << std::endl;
+            std::cerr << "Usage: FuckAI --config <key> <value>" << std::endl;
             return 1;
         }
         std::string key = argv[2];
         std::string value = argv[3];
 
+        if (CONFIG_KEYS.find(key) == CONFIG_KEYS.end()) {
+            std::cerr << LOG_ERROR << "Invalid configuration key: " << key << std::endl;
+            std::cerr << USAGE << std::endl;
+            return 1;
+        }
+
         config[key] = value;
         save_config(CONFIG_FILE, config);
+        std::cout << LOG_INFO << "Configuration updated: " << key << std::endl;
         return 0;
     }
 
     if (
         std::strcmp(argv[1], "--show-config") == 0 ||
-        std::strcmp(argv[1], "-s") == 0 ||
-        std::strcmp(argv[1], "show-config") == 0
+        std::strcmp(argv[1], "-s") == 0
     ) {
         for (const auto& pair : config) {
             std::cout << pair.first << "=" << pair.second << std::endl;
         }
         return 0;
+    }
+
+    if (argc > 2) {
+        std::cerr << LOG_ERROR << "Please make sure to enclose strings in quotes." << std::endl;
+        std::cerr << USAGE << std::endl;
+        return 1;
+    }
+
+    std::string prompt = argv[1];
+
+    if (prompt.empty()) {
+        std::cerr << LOG_ERROR << "No command provided." << std::endl;
+        std::cerr << USAGE << std::endl;
+        return 1;
+    }
+
+    std::string response = post_openai(prompt, config);
+    if (!response.empty()) {
+        std::cout << response << std::endl;
+    } else {
+        std::cerr << LOG_ERROR << "Failed to get a response from the API." << std::endl;
+        return 1;
     }
 }

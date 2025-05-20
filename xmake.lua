@@ -1,10 +1,14 @@
 add_rules("mode.debug", "mode.release")
+set_languages("c++17")
+
+add_requires("cpr")
+add_requires("nlohmann_json")
 
 target("FuckAI")
     set_kind("binary")
     add_files("src/*.cpp")
 
-    add_packages("cpr")
+    add_packages("cpr", "nlohmann_json")
 
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
